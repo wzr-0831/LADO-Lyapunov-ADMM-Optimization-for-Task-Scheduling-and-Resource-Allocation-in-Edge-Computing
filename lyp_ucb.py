@@ -1,19 +1,19 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-class LyapunovLinUCBScheduler:
+class LyapunovLinGreedyScheduler:
     """
-    带折扣线性UCB的Lyapunov约束MaxWeight算法 (LCMW-D-LinUCB)。
+    带折扣线性贪心的Lyapunov约束MaxWeight算法 (LCMW-D-LinGreedy)。
     
     该调度器根据用户提供的可行性分析报告进行设计，旨在解决高维LEO卫星网络中的
     能量感知资源分配问题。它融合了：
     1.  Lyapunov优化：通过物理和虚拟队列管理数据积压和长期能耗约束。
-    2.  结构化在线学习 (线性UCB)：通过学习一个共享的低维线性模型来克服维度灾难，
-        利用卫星信道之间的物理相关性。
-    3.  折扣机制：通过一个折扣因子gamma来“遗忘”过时的信息，以适应非平稳的信道环境。
+    2.  结构化在线学习 (线性贪心)：通过学习一个共享的低维线性模型来克服维度灾难，
+        利用卫星信道之间的物理相关性，但只使用利用项而不进行探索。
+    3.  折扣机制：通过一个折扣因子gamma来"遗忘"过时的信息，以适应非平稳的信道环境。
     """
 
-    def __init__(self, num_arms, context_dim, V, energy_budgets, ucb_alpha=1.0, gamma=0.99):
+    def __init__(self, num_arms, context_dim, V, energy_budgets, gamma=0.99):
         """
         初始化调度器。
 
@@ -22,21 +22,19 @@ class LyapunovLinUCBScheduler:
             context_dim (int): 上下文向量的维度, d。
             V (float): Lyapunov权衡参数。
             energy_budgets (np.array): 每个臂的长期平均能耗预算, E_max。
-            ucb_alpha (float): LinUCB的探索参数 alpha。
             gamma (float): 折扣因子 (0 < gamma <= 1)，用于处理非平稳性。
         """
         self.num_arms = num_arms
         self.context_dim = context_dim
         self.V = V
         self.energy_budgets = np.array(energy_budgets)
-        self.ucb_alpha = ucb_alpha
         self.gamma = gamma
 
         # Lyapunov 状态变量
         self.Q = np.zeros(num_arms)  # 物理数据队列
         self.W = np.zeros(num_arms)  # 虚拟能耗队列
 
-        # LinUCB 学习相关的统计数据
+        # 线性贪心学习相关的统计数据
         # A = d x d 矩阵, b = d x 1 向量
         self.A = np.identity(context_dim)  # 初始化为单位矩阵以保证可逆
         self.b = np.zeros((context_dim, 1))
@@ -48,6 +46,7 @@ class LyapunovLinUCBScheduler:
     def choose_arm(self, context_vectors):
         """
         在每个时隙，根据当前的上下文向量选择一个臂。
+        使用贪心算法（移除UCB的探索项）。
 
         参数:
             context_vectors (np.array): 一个 K x d 的矩阵，每一行是对应臂的上下文向量。
@@ -55,28 +54,25 @@ class LyapunovLinUCBScheduler:
         返回:
             int: 被选中的臂的索引。
         """
-        # --- LinUCB部分：计算每个臂的乐观服务率估计 ---
+        # --- 贪心算法部分：只计算预测的服务率（移除探索项） ---
         # 首先，根据当前的A和b计算参数theta的估计值
         self.A_inv = np.linalg.inv(self.A)
         self.theta_hat = self.A_inv @ self.b
 
-        ucb_estimates = np.zeros(self.num_arms)
+        greedy_estimates = np.zeros(self.num_arms)
         for i in range(self.num_arms):
             x_i = context_vectors[i].reshape(-1, 1)  # 确保是列向量
             
-            # 1. 预测的平均服务率 (exploitation term)
+            # 只使用预测的平均服务率 (exploitation term only)
             predicted_mean = self.theta_hat.T @ x_i
             
-            # 2. UCB探索奖励 (exploration term)
-            exploration_bonus = self.ucb_alpha * np.sqrt(x_i.T @ self.A_inv @ x_i)
-            
-            # 3. 乐观的服务率估计
-            ucb_estimates[i] = predicted_mean + exploration_bonus
+            # 贪心估计：移除UCB的探索奖励项
+            greedy_estimates[i] = predicted_mean
 
         # --- Lyapunov部分：计算每个臂的综合得分 ---
-        # 决策逻辑与之前相同，但使用LinUCB的估计值
-        # 最大化: (Q + V) * S_ucb - W
-        scores = (self.Q + self.V) * ucb_estimates - self.W
+        # 决策逻辑保持相同，但使用贪心估计值
+        # 最大化: (Q + V) * S_greedy - W
+        scores = (self.Q + self.V) * greedy_estimates - self.W
         
         return np.argmax(scores)
 
@@ -93,7 +89,7 @@ class LyapunovLinUCBScheduler:
         energy_deltas[chosen_arm] += observed_energy_cost
         self.W = np.maximum(0, self.W + energy_deltas)
 
-        # --- 更新LinUCB的学习模型 (核心改造部分) ---
+        # --- 更新线性贪心的学习模型 (核心改造部分) ---
         x_chosen = chosen_arm_context.reshape(-1, 1) # 确保是列向量
         
         # 应用折扣因子 "遗忘" 历史信息
@@ -121,7 +117,7 @@ def simulate_contextual_environment():
     # === 代码修改部分：将固定到达率改为动态到达率 ===
     BASE_ARRIVAL_RATE = 0.2 # 平均到达率
     
-    scheduler = LyapunovLinUCBScheduler(
+    scheduler = LyapunovLinGreedyScheduler(
         num_arms=NUM_ARMS,
         context_dim=CONTEXT_DIM,
         V=V_PARAM,
@@ -139,7 +135,7 @@ def simulate_contextual_environment():
         'total_energy_per_arm': np.zeros(NUM_ARMS)
     }
 
-    print("Starting simulation with LinUCB model and DYNAMIC arrivals...")
+    print("Starting simulation with LinGreedy model and DYNAMIC arrivals...")
     for t in range(SIMULATION_STEPS):
         # 1. 生成时变的上下文向量 (模拟LEO环境)
         base_angle = np.sin(2 * np.pi * t / 1000 + np.linspace(0, 2*np.pi, NUM_ARMS))
